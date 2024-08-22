@@ -156,7 +156,7 @@ func makeOfficialLWTForSplit(customsId string) (string, error) {
 	for _, id := range customsIds {
 		var rows []ExcelColumnForLwt
 		err = Db.Select(&rows, QueryLwtDataForSplit, id)
-		if err != nil {
+		if err != nil || len(rows) == 0 {
 			return "", err
 		}
 
