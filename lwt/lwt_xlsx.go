@@ -4,15 +4,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	log "github.com/sirupsen/logrus"
-	"github.com/spf13/viper"
-	"github.com/xuri/excelize/v2"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
+	"github.com/xuri/excelize/v2"
 	"sysafari.com/customs/cguard/rabbit"
 	"sysafari.com/customs/cguard/utils"
-	"time"
 )
 
 const (
@@ -23,9 +24,10 @@ const (
 
 // LwtExcelSheetMap  SaleChannel 对应的sheet index
 var LwtExcelSheetMap = map[string]int{
-	"amazon":    0,
-	"ebay":      1,
-	"cdiscount": 2,
+	"amazon":     0,
+	"ebay":       1,
+	"cdiscount":  2,
+	"c_discount": 2,
 }
 
 // GenerateLWTExcel generate excel file for LWT
