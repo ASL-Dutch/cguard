@@ -1,5 +1,6 @@
 # This is an example .goreleaser.yml file with some sensible defaults.
 # Make sure to check the documentation at https://goreleaser.com
+version: 2  # 确保使用版本 2
 before:
   hooks:
     # You may remove this if you don't use go modules.
@@ -15,13 +16,12 @@ builds:
     goarch:
       - amd64
 archives:
-  - replacements:
-      linux: Linux
-      windows: Windows
-      amd64: x86_64
-    format_overrides:
-      - goos: windows
-        format: zip
+  - format: tar.gz  # 指定 Linux 的归档格式
+    files:
+      - template/
+      - .cguard.yaml
+      - README.md
+  - format: zip  # 指定 Windows 的归档格式
     files:
       - template/
       - .cguard.yaml
