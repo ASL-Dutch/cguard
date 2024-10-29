@@ -16,12 +16,14 @@ builds:
     goarch:
       - amd64
 archives:
-  - format: tar.gz  # 指定 Linux 的归档格式
+  - id: linux_archive  # 为 Linux 归档指定唯一 ID
+    format: tar.gz  # 指定 Linux 的归档格式
     files:
       - template/
       - .cguard.yaml
       - README.md
-  - format: zip  # 指定 Windows 的归档格式
+  - id: windows_archive  # 为 Windows 归档指定唯一 ID
+    format: zip  # 指定 Windows 的归档格式
     files:
       - template/
       - .cguard.yaml
