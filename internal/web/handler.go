@@ -3,13 +3,16 @@ package lwt
 import (
 	"errors"
 	"fmt"
-	"github.com/labstack/echo/v4"
-	"github.com/spf13/viper"
 	"net/http"
 	"strings"
-	"sysafari.com/customs/cguard/utils"
 	"time"
+
+	"github.com/labstack/echo/v4"
+	"sysafari.com/customs/cguard/internal/config"
+	"sysafari.com/customs/cguard/pkg/utils"
 )
+
+const TimeLayout = "20060102150405"
 
 // DownloadLwtExcel
 // Download excel for LWT
@@ -24,7 +27,8 @@ import (
 // @Failure      400
 // @Router       /lwt/{filename} [get]
 func DownloadLwtExcel(c echo.Context) error {
-	tmpDir := viper.GetString("lwt.tmp.dir")
+	cfg := config.GetConfig()
+	tmpDir := cfg.LWT.Tmp.Dir
 	if !utils.IsDir(tmpDir) {
 		return c.String(http.StatusInternalServerError, fmt.Sprintf("The lwt root directory: %s is not exists.", tmpDir))
 	}

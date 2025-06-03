@@ -1,6 +1,6 @@
-package lwt
+package script
 
-// SQL
+// SQL for LWT
 const (
 	QueryLwtData string = `SELECT sca.customs_id,
        sca.item_number,
@@ -78,8 +78,8 @@ FROM service_customs_article sca
 WHERE sca.customs_id =?`
 
 	// QueryPlatAndBillNo SQL Query plat no and bill number for customs
-	QueryPlatAndBillNo string = `SELECT c.customs_id, 
-       c.plato_no, 
+	QueryPlatAndBillNo string = `SELECT c.customs_id,
+       c.plato_no,
        bb.bill_no
 FROM base_customs c
          INNER JOIN service_bill_customs sbc ON c.customs_id = sbc.customs_id
