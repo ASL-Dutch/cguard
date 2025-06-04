@@ -22,7 +22,7 @@ rabbitmq:
 
 mysql:
   driver: mysql
-  url: 'USER:PASSWORD@tcp(HOST:PORT)/DATABASE'
+  url: "USER:PASSWORD@tcp(HOST:PORT)/DATABASE"
   # connection max life time: default 3 minutes
   max-life-time: 3
   # max open connections: default 10
@@ -52,4 +52,6 @@ lwt:
   tmp:
     # LWT file save root directory
     dir: out/tmp
-
+  adjustment:
+    # Tolerance for AV value comparison precision (default: 0.01)
+    tolerance: 0.01

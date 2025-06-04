@@ -1,6 +1,7 @@
 package config
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -51,6 +52,10 @@ func InitLog(logDir string, logFilename string, lev string) {
 	level, err := log.ParseLevel(lev)
 	if err == nil {
 		log.SetLevel(level)
+		if level == log.DebugLevel {
+			// Debug 级别时同时输出到文件和终端
+			log.SetOutput(io.MultiWriter(writer, os.Stdout))
+		}
 	} else {
 		log.Errorf("Invalid log level '%s', using default", lev)
 	}

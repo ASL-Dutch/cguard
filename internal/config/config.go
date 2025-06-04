@@ -47,6 +47,14 @@ type MySQLConfig struct {
 type LWT struct {
 	Template LWTTemplate `mapstructure:"template"`
 	Tmp      LWTTemp     `mapstructure:"tmp"`
+	// Adjustment represents the LWT adjustment configuration
+	Adjustment LWTAdjustment `mapstructure:"adjustment"`
+}
+
+// LWTAdjustment represents the LWT adjustment configuration
+type LWTAdjustment struct {
+	// Tolerance is the precision tolerance for AV value comparison (default: 0.01)
+	Tolerance float64 `mapstructure:"tolerance"`
 }
 
 // LWTTemplate represents the LWT template configuration

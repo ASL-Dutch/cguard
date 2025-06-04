@@ -37,6 +37,10 @@ func SetupRoutes() *echo.Echo {
 	// http://localhost:{port}/lwt/OP210603005_20220909153131.xlsx?download=1
 	e.GET("/lwt/:filename", DownloadLwtExcel)
 
+	// api exp:
+	// http://localhost:{port}/lwt/adjust
+	e.POST("/lwt/adjust", AdjustLwtParamsAndGenerateNewLwt)
+
 	server = e
 	return e
 }

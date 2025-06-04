@@ -1,14 +1,13 @@
 package lwt
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 	"sysafari.com/customs/cguard/internal/config"
+	"sysafari.com/customs/cguard/internal/model"
+	"sysafari.com/customs/cguard/internal/service"
 	"sysafari.com/customs/cguard/pkg/utils"
 )
 
@@ -34,10 +33,10 @@ func DownloadLwtExcel(c echo.Context) error {
 	}
 	filename := c.Param("filename")
 	if filename == "" {
-		return c.String(http.StatusBadRequest, fmt.Sprintf("The filename must be provided,but was empty."))
+		return c.String(http.StatusBadRequest, "The filename must be provided,but was empty.")
 	}
 
-	filepath, err := getFilePath(tmpDir, filename)
+	filepath, err := utils.GetFilePathByFilename(tmpDir, filename, TimeLayout)
 	if err != nil {
 		return c.String(http.StatusBadRequest, fmt.Sprintf("The filename:%s format not support.", filename))
 	}
@@ -46,24 +45,48 @@ func DownloadLwtExcel(c echo.Context) error {
 		return c.String(http.StatusNotFound, fmt.Sprintf("The file:%s not found.", filename))
 	}
 
-	if "1" == c.QueryParam("download") {
+	if c.QueryParam("download") == "1" {
 		return c.Attachment(filepath, filename)
 	}
 	return c.File(filepath)
 }
 
-func getFilePath(rootDir string, filename string) (string, error) {
-	fn := strings.Split(filename, ".")[0]
-	paths := strings.Split(fn, "_")
-	timestamp := paths[len(paths)-1]
-	if timestamp == "" {
-		return "", errors.New(fmt.Sprintf("The filename:%s cannot get timestamp.", filename))
+// AdjustLwtParams
+// Adjust LWT parameters and regenerate LWT file.IMPORTANT: The customs's LWT file must be generated first.
+// @Summary      Adjust LWT parameters
+// @Description  Adjust LWT calculation parameters and regenerate LWT file.IMPORTANT: The customs's LWT file must be generated first.
+// @Tags         lwt
+// @Accept       json
+// @Produce      json
+// @Param        request body model.RequestForLwtAdjustment true "LWT adjustment request"
+// @Success      200  {object} model.ResponseForLwtAdjustment
+// @Failure      400  {object} model.ResponseForLwtAdjustment
+// @Router       /lwt/adjust [post]
+func AdjustLwtParamsAndGenerateNewLwt(c echo.Context) error {
+	var req model.RequestForLwtAdjustment
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, model.ResponseForLwtAdjustment{
+			CustomsId: req.CustomsId,
+			Status:    "error",
+			Error:     "Invalid request format",
+		})
 	}
-	ftime, err := time.Parse(TimeLayout, timestamp)
-	if err != nil {
-		return "", err
-	}
-	filepath := fmt.Sprintf("%s/%d/%d/%s", rootDir, ftime.Year(), ftime.Month(), filename)
 
-	return filepath, nil
+	// Generate LWT file with adjusted parameters
+	ser := service.NewLwtAdjustService(req)
+	filename, hasDiff, err := ser.AdjustLwtParamsAndGenerateNewLwt()
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, model.ResponseForLwtAdjustment{
+			CustomsId: req.CustomsId,
+			Status:    "error",
+			Error:     err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, model.ResponseForLwtAdjustment{
+		CustomsId:   req.CustomsId,
+		Status:      "success",
+		LwtFilename: filename,
+		HasDiff:     hasDiff,
+	})
 }

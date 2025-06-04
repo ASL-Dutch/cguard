@@ -484,7 +484,8 @@ func fillLwtExcelForNl(lwtFilePath string, rows []model.ExcelColumnForLwt, sheet
 
 	fmt.Printf("sheetName: %s\n", sheetName)
 
-	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: FloatDecimalPlaces})
+	decimalPlaces := FloatDecimalPlaces
+	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: &decimalPlaces})
 	style, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment})
 	stylePercent, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, NumFmt: 10, Font: font})
 
@@ -494,7 +495,7 @@ func fillLwtExcelForNl(lwtFilePath string, rows []model.ExcelColumnForLwt, sheet
 		for i := 0; i < len(rows); i++ {
 			rowNumber := InsertRowFirst + i
 
-			err = f.InsertRow(sheetName, rowNumber)
+			err = f.InsertRows(sheetName, rowNumber, 1)
 			row := rows[i]
 
 			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("A%d", rowNumber), row.ItemNumber, style)
@@ -620,7 +621,8 @@ func fillLwtExcelForBe(lwtFilePath string, rows []model.ExcelColumnForLwt, sheet
 
 	fmt.Printf("sheetName: %s\n", sheetName)
 
-	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: FloatDecimalPlaces})
+	decimalPlaces := FloatDecimalPlaces
+	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: &decimalPlaces})
 	style, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment})
 	stylePercent, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, NumFmt: 10, Font: font})
 
@@ -630,7 +632,7 @@ func fillLwtExcelForBe(lwtFilePath string, rows []model.ExcelColumnForLwt, sheet
 		for i := 0; i < len(rows); i++ {
 			rowNumber := InsertRowFirst + i
 
-			err = f.InsertRow(sheetName, rowNumber)
+			err = f.InsertRows(sheetName, rowNumber, 1)
 			row := rows[i]
 
 			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("A%d", rowNumber), row.ItemNumber, style)
@@ -737,7 +739,8 @@ func fillBriefLwtExcel(lwtFilePath string, rows []model.ExcelColumnForBriefLwt, 
 
 	fmt.Printf("sheetName: %s\n", sheetName)
 
-	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: FloatDecimalPlaces})
+	decimalPlaces := FloatDecimalPlaces
+	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: &decimalPlaces})
 	style, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment})
 
 	if err != nil {
@@ -750,7 +753,7 @@ func fillBriefLwtExcel(lwtFilePath string, rows []model.ExcelColumnForBriefLwt, 
 			fmt.Println("Begin to fill excel, at:", i)
 			rowNumber := InsertRowFirst + i
 
-			err = f.InsertRow(sheetName, rowNumber)
+			err = f.InsertRows(sheetName, rowNumber, 1)
 			row := rows[i]
 
 			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("A%d", rowNumber), row.ItemNumber, style)
