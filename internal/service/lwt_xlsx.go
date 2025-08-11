@@ -578,7 +578,7 @@ func fillLwtExcelForNl(lwtFilePath string, rows []model.ExcelColumnForLwt, sheet
 			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AP%d", rowNumber), subtotalFormula, styleFormula)
 
 			// customs value include duty
-			customsValueIncludeDutyFormula := fmt.Sprintf("=Round(Q%d-(S%d+V%d+X%d+Z%d+AB%d+AC%d+AE%d+AP%d),6)",
+			customsValueIncludeDutyFormula := fmt.Sprintf("=Round(Q%d-(S%d+V%d+X%d+Z%d+AB%d+AC%d+AE%d+AP%d),2)",
 				rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber)
 			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AQ%d", rowNumber), customsValueIncludeDutyFormula, styleFormula)
 
