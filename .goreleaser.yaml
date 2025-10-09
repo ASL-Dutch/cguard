@@ -20,7 +20,7 @@ archives:
     format: tar.gz  # 指定 Linux 的归档格式
     files:
       - template/
-      - .cguard.yaml
+      - cguard.yaml
       - README.md
   - id: windows_archive  # 为 Windows 归档指定唯一 ID
     format: zip  # 指定 Windows 的归档格式
