@@ -26,7 +26,7 @@ archives:
     format: zip  # 指定 Windows 的归档格式
     files:
       - template/
-      - .cguard.yaml
+      - cguard.yaml
       - README.md
 checksum:
   name_template: 'checksums.txt'
