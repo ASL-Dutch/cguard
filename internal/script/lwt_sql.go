@@ -1,6 +1,6 @@
-package lwt
+package script
 
-// SQL
+// SQL for LWT
 const (
 	QueryLwtData string = `SELECT sca.customs_id,
        sca.item_number,
@@ -52,7 +52,8 @@ const (
 FROM service_customs_article sca
          LEFT JOIN service_declare_value_process scvp ON sca.declare_value_process_id = scvp.id
          LEFT JOIN base_description bd ON scvp.description_id = bd.id
-WHERE sca.customs_id =? ORDER BY sca.item_number;`
+WHERE sca.customs_id =? and sca.is_removed = 0
+ORDER BY sca.item_number;`
 
 	// QueryBriefLwtData Query the rows data for brief LWT
 	QueryBriefLwtData = `SELECT sca.customs_id,
@@ -75,11 +76,11 @@ WHERE sca.customs_id =? ORDER BY sca.item_number;`
 FROM service_customs_article sca
          LEFT JOIN service_customs_value_process scvp ON sca.customs_value_process_id = scvp.id
          LEFT JOIN base_description bd ON scvp.description_id = bd.id
-WHERE sca.customs_id =?`
+WHERE sca.customs_id =? and sca.is_removed = 0`
 
 	// QueryPlatAndBillNo SQL Query plat no and bill number for customs
-	QueryPlatAndBillNo string = `SELECT c.customs_id, 
-       c.plato_no, 
+	QueryPlatAndBillNo string = `SELECT c.customs_id,
+       c.plato_no,
        bb.bill_no
 FROM base_customs c
          INNER JOIN service_bill_customs sbc ON c.customs_id = sbc.customs_id
@@ -161,7 +162,7 @@ FROM service_customs_article sca
          INNER JOIN service_customs_supply_article scsa ON sca.id = scsa.article_id
          LEFT JOIN service_declare_value_process scvp ON sca.declare_value_process_id = scvp.id
          LEFT JOIN base_description bd ON scvp.description_id = bd.id
-WHERE sca.customs_id = ?
+WHERE sca.customs_id = ? and sca.is_removed = 0
 ORDER BY scsa.item;`
 
 	// QueryBriefLwtDataForSplit 拆单报关，通过子单号插叙父单号和父单号的item_number
@@ -186,6 +187,6 @@ FROM service_customs_article sca
          INNER JOIN service_customs_supply_article scsa ON sca.id = scsa.article_id
          LEFT JOIN service_customs_value_process scvp ON sca.customs_value_process_id = scvp.id
          LEFT JOIN base_description bd ON scvp.description_id = bd.id
-WHERE sca.customs_id = ?
+WHERE sca.customs_id = ? and sca.is_removed = 0
 ORDER BY scsa.item;`
 )

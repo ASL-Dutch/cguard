@@ -1,25 +1,25 @@
 /*
 Copyright © 2022 Joker
-
 */
 package cmd
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/jmoiron/sqlx"
-	"github.com/labstack/echo/v4"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	echoSwagger "github.com/swaggo/echo-swagger"
-	"os"
-	"path/filepath"
 	_ "sysafari.com/customs/cguard/docs"
-	"sysafari.com/customs/cguard/logging"
-	"sysafari.com/customs/cguard/lwt"
-	"sysafari.com/customs/cguard/rabbit"
-	"time"
+	"sysafari.com/customs/cguard/internal/config"
+	"sysafari.com/customs/cguard/internal/database"
+	"sysafari.com/customs/cguard/internal/service"
+	web "sysafari.com/customs/cguard/internal/web"
 )
 
 var cfgFile string
@@ -28,7 +28,7 @@ var cfgFile string
 var rootCmd = &cobra.Command{
 	Use:   "cguard",
 	Short: "Generate various documents required by the customs declaration system",
-	Long: `In order to ensure the normal customs declaration business, 
+	Long: `In order to ensure the normal customs declaration business,
 the data files or view files of various report types that need to be generated. For example:
 1. LWT documents that need to be submitted when customs declaration encounters inspection.
 ..
@@ -36,83 +36,37 @@ the data files or view files of various report types that need to be generated. 
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	Run: func(cmd *cobra.Command, args []string) {
-		// async lwt request consumer
-		go LwtConsumerStart()
+		// 初始化参数
+		cfg, err := config.InitConfig()
+		if err != nil {
+			log.Fatalf("初始化配置失败: %v", err)
+			return
+		}
 
-		// Web
-		echoRoutes()
+		// 初始化数据库连接
+		err = database.InitDB(&cfg.MySQL)
+		if err != nil {
+			log.Fatalf("初始化数据库失败: %v", err)
+		}
 
+		// 开启rabbitmq消费者
+		if err := config.InitRabbitMQ(); err != nil {
+			log.Fatalf("初始化RabbitMQ失败: %v", err)
+		}
+
+		// 开启lwt请求消费者
+		if err := config.StartLwtRequestConsumer(service.GenerateLWTExcel); err != nil {
+			log.Fatalf("启动lwt请求消费者失败: %v", err)
+		}
+
+		// 设置优雅关闭
+		setupGracefulShutdown()
+
+		// 启动Web服务器
+		if err := web.StartServer(); err != nil {
+			log.Infof("服务器关闭: %v", err)
+		}
 	},
-}
-
-// echoRoutes Set echo routes
-// @title LWT web service
-// @version 1.0
-// @description This is a simple web service that provides download lwt file
-// @termsOfService http://swagger.io/terms/
-
-// @contact.name Joker
-// @contact.email ljr@y-clouds.com
-
-// @license.name Apache 2.0
-// @license.url http://www.apache.org/licenses/LICENSE-2.0.html
-
-// @host localhost:7004
-// @BasePath /v2
-func echoRoutes() {
-	e := echo.New()
-	// swagger
-	e.GET("/swagger/*", echoSwagger.WrapHandler)
-
-	// api exp:
-	// http://localhost:{port}/lwt/OP210603005_20220909153131.xlsx?download=1
-	e.GET("/lwt/:filename", lwt.DownloadLwtExcel)
-
-	port := viper.GetString("port")
-	if port == "" {
-		port = "1324"
-	}
-
-	fmt.Printf("Rattler server started: %v", e.Start(":"+port))
-}
-
-// LwtConsumerStart Start lwt request consumer
-func LwtConsumerStart() {
-	// Set global db connection
-	initGlobalDatabaseConnection()
-
-	// start amqp consumer
-	listenerForLwtRequest()
-}
-
-// initGlobalDatabaseConnection sets the global database connection
-func initGlobalDatabaseConnection() {
-	fmt.Println("init sql connection ....")
-	db, err := sqlx.Open("mysql", viper.GetString("mysql.url"))
-
-	if err != nil {
-		panic(err)
-	}
-	// See "Important settings" section.
-	db.SetConnMaxLifetime(time.Minute * 3)
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(10)
-	fmt.Println("db stats:", db.Stats())
-
-	lwt.Db = db
-}
-
-// Generate lwt request queue listener
-func listenerForLwtRequest() {
-	rbmq := &rabbit.Rabbit{
-		Url:          viper.GetString("rabbitmq.url"),
-		Exchange:     viper.GetString("rabbitmq.exchange"),
-		ExchangeType: viper.GetString("rabbitmq.exchange-type"),
-		Queue:        viper.GetString("rabbitmq.queue.lwt-req"),
-	}
-
-	log.Infof("Starting ... LWT request consumer: %v ", rbmq)
-	rabbit.Consume(rbmq, lwt.GenerateLWTExcel)
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -140,7 +94,7 @@ func init() {
 
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
-	fmt.Println("Init vipper ...")
+	fmt.Println("Init viper ...")
 	if cfgFile != "" {
 		// Use config file from the flag.
 		viper.SetConfigFile(cfgFile)
@@ -160,16 +114,52 @@ func initConfig() {
 	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err == nil {
 		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
+
+		// Initialize global configuration
+		_, err := config.InitConfig()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error initializing config:", err)
+		}
 	}
+
 	// init logging
 	initLogging()
 }
 
+// initLogging Initialize logging
 func initLogging() {
 	path, _ := os.Executable()
 	_, exec := filepath.Split(path)
 	fmt.Println(exec)
-	logfile := filepath.Join(viper.GetString("log.log-base"), exec+".log")
 
-	logging.InitLog(logfile, viper.GetString("log.level"))
+	cfg := config.GetConfig()
+	logDir := cfg.Log.LogBase
+	logFilename := exec + ".log"
+
+	config.InitLog(logDir, logFilename, cfg.Log.Level)
+}
+
+// setupGracefulShutdown 设置优雅关闭机制
+func setupGracefulShutdown() {
+	// 设置优雅关闭
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		// 等待中断信号
+		<-quit
+		log.Info("正在关闭服务器...")
+
+		// 优雅关闭 web 服务器（10秒超时）
+		if err := web.ShutdownServer(10 * time.Second); err != nil {
+			log.Errorf("服务器关闭出错: %v", err)
+		}
+
+		// 关闭其他资源
+		config.CloseRabbitMQ()
+		database.CloseDB()
+
+		log.Info("服务器已关闭")
+		os.Exit(0)
+	}()
 }

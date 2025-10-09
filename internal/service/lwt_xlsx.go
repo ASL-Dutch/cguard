@@ -1,18 +1,23 @@
-package lwt
+package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	log "github.com/sirupsen/logrus"
-	"github.com/spf13/viper"
-	"github.com/xuri/excelize/v2"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sysafari.com/customs/cguard/rabbit"
-	"sysafari.com/customs/cguard/utils"
 	"time"
+
+	"github.com/jmoiron/sqlx"
+	log "github.com/sirupsen/logrus"
+	"github.com/xuri/excelize/v2"
+	"sysafari.com/customs/cguard/internal/config"
+	"sysafari.com/customs/cguard/internal/database"
+	"sysafari.com/customs/cguard/internal/model"
+	"sysafari.com/customs/cguard/internal/script"
+	"sysafari.com/customs/cguard/pkg/utils"
 )
 
 const (
@@ -23,14 +28,15 @@ const (
 
 // LwtExcelSheetMap  SaleChannel 对应的sheet index
 var LwtExcelSheetMap = map[string]int{
-	"amazon":    0,
-	"ebay":      1,
-	"cdiscount": 2,
+	"amazon":     0,
+	"ebay":       1,
+	"cdiscount":  2,
+	"c_discount": 2,
 }
 
 // GenerateLWTExcel generate excel file for LWT
 func GenerateLWTExcel(data string) {
-	response := &ResponseForLwt{
+	response := &model.ResponseForLwt{
 		Status:      "failed",
 		LwtFilename: "",
 		Error:       "",
@@ -49,28 +55,30 @@ func GenerateLWTExcel(data string) {
 		}
 
 		if err != nil {
-			fmt.Println("Generate LWT excel failed", err)
+			fmt.Println("Error, generate lwt file failed:", err)
 			response.Error = fmt.Sprintf("Generate LWT excel failed,err:%v", err)
 		} else {
 			response.CustomsId = requestForLwt.CustomsId
 			response.Status = "success"
 			response.LwtFilename = lwtFilename
 			response.Error = ""
+			fmt.Println("Generate LWT excel success, lwtFilename:", lwtFilename)
 		}
 
 	}
 	// pub to  rabbitmq
+	fmt.Println("send lwt response to rabbitmq....")
 	publishLwtResult(response)
 }
 
 // deserializeRequest is used to deserialize rabbitmq request
-func deserializeRequest(message string) (RequestForLwt, error) {
+func deserializeRequest(message string) (model.RequestForLwt, error) {
 	log.Infof("Deserialize request: %v", message)
 
 	msg, err := strconv.Unquote(message)
 	fmt.Println("msg:", msg)
 
-	req := RequestForLwt{}
+	req := model.RequestForLwt{}
 	if err != nil {
 		err = json.Unmarshal([]byte(message), &req)
 	} else {
@@ -82,39 +90,44 @@ func deserializeRequest(message string) (RequestForLwt, error) {
 	return req, nil
 }
 
-func publishLwtResult(res *ResponseForLwt) {
-	rbmq := &rabbit.Rabbit{
-		Url:          viper.GetString("rabbitmq.url"),
-		Exchange:     viper.GetString("rabbitmq.exchange"),
-		ExchangeType: viper.GetString("rabbitmq.exchange-type"),
-		Queue:        viper.GetString("rabbitmq.queue.lwt-res"),
-	}
+// publishLwtResult 发布LWT结果到RabbitMQ
+func publishLwtResult(res *model.ResponseForLwt) {
+	publishQueueName := config.GlobalConfig.RabbitMQ.Queue.LwtRes
 	log.Infof("Lwt response: %v", res)
 
 	marshal, err := json.Marshal(res)
 	if err != nil {
 		log.Errorf("Marshel struct to json failed: %v", err)
 	} else {
-		rabbit.Publish(rbmq, string(marshal))
+		config.PublishMessage(string(marshal), publishQueueName)
 	}
 }
 
 // isSplitCustoms 是否是拆单报关？@param customsId 主报关单号
 func isSplitCustoms(customsId string) bool {
 	var count int
-	err := Db.Get(&count, QueryCustomsSplitTotal, customsId)
+
+	// 创建上下文
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 使用WithContext执行查询
+	err := database.WithContext(ctx, func(db *sqlx.DB) error {
+		return db.Get(&count, script.QueryCustomsSplitTotal, customsId)
+	})
+
 	if err != nil {
-		fmt.Printf("query customs split total failed, err:%v", err)
+		log.Errorf("查询拆单总数失败: %v", err)
 		return false
 	}
-	fmt.Println("split count:", count)
 	return count > 0
 }
 
 // makeOfficialLWTForNormal 普通的报关单生成LWT（未拆单报关）
 func makeOfficialLWTForNormal(customsId string) (string, error) {
-	var rows []ExcelColumnForLwt
-	err := Db.Select(&rows, QueryLwtData, customsId)
+	fmt.Println("1. query lwt data, customsId:", customsId)
+	var rows []model.ExcelColumnForLwt
+	err := database.GetDB().Select(&rows, script.QueryLwtData, customsId)
 	if err != nil {
 		return "", err
 	}
@@ -131,14 +144,14 @@ func makeOfficialLWTForSplit(customsId string) (string, error) {
 	// 1. 查询子报关单号
 	fmt.Println("1. query customs split child, customsId:", customsId)
 	var customsIds []string
-	err := Db.Select(&customsIds, QueryCustomsSplitChild, customsId)
+	err := database.GetDB().Select(&customsIds, script.QueryCustomsSplitChild, customsId)
 	if err != nil {
 		return "", errors.New(fmt.Sprintf("query customs split child customsIds failed, err:%v", err))
 	}
 	// 2. 查询主单号的数据
 	fmt.Println("2. query customs base info, customsId:", customsId)
-	var customsBaseInfo CustomsBaseInfo
-	err = Db.Get(&customsBaseInfo, QueryCustomsBaseInfo, customsId)
+	var customsBaseInfo model.CustomsBaseInfo
+	err = database.GetDB().Get(&customsBaseInfo, script.QueryCustomsBaseInfo, customsId)
 	if err != nil {
 		return "", errors.New(fmt.Sprintf("query customs base info failed, err:%v", err))
 	}
@@ -154,9 +167,9 @@ func makeOfficialLWTForSplit(customsId string) (string, error) {
 	// 有一个子单号的数据为空，就返回错误。不再继续执行
 	fmt.Println("4. loop fill lwt excel for split, customsIds:", customsIds)
 	for _, id := range customsIds {
-		var rows []ExcelColumnForLwt
-		err = Db.Select(&rows, QueryLwtDataForSplit, id)
-		if err != nil {
+		var rows []model.ExcelColumnForLwt
+		err = database.GetDB().Select(&rows, script.QueryLwtDataForSplit, id)
+		if err != nil || len(rows) == 0 {
 			return "", err
 		}
 
@@ -184,18 +197,19 @@ func makeOfficialLWTForSplit(customsId string) (string, error) {
 func makeOfficialLWT(customsId string) (string, error) {
 	// Is split into multiple sales channels?
 	if isSplitCustoms(customsId) {
-		fmt.Println("customsId is split, customsId:", customsId)
+		fmt.Printf("-----LWT, customsId is split, customsId:%s -------\n", customsId)
 		return makeOfficialLWTForSplit(customsId)
 	} else {
-		fmt.Println("customsId is normal, customsId:", customsId)
+		fmt.Printf("-----LWT, customsId is normal, customsId:%s --------\n", customsId)
 		return makeOfficialLWTForNormal(customsId)
 	}
 }
 
 // makeBriefLwtNormal 普通的简易报关文件LWT
 func makeBriefLwtNormal(customsId string) (string, error) {
-	var rows []ExcelColumnForBriefLwt
-	err := Db.Select(&rows, QueryBriefLwtData, customsId)
+	fmt.Println("1. query brief lwt data, customsId:", customsId)
+	var rows []model.ExcelColumnForBriefLwt
+	err := database.GetDB().Select(&rows, script.QueryBriefLwtData, customsId)
 	if err != nil {
 		return "", errors.New(fmt.Sprintf("query brief lwt data failed, err:%v", err))
 	}
@@ -204,12 +218,15 @@ func makeBriefLwtNormal(customsId string) (string, error) {
 		return "", errors.New("cant not query rows for lwt")
 	}
 
-	var billPlat BillNoAndPlatForCustoms
-	err = Db.Get(&billPlat, QueryPlatAndBillNo, customsId)
+	fmt.Println("2. query plat and bill no, customsId:", customsId)
+	var billPlat model.BillNoAndPlatForCustoms
+	err = database.GetDB().Get(&billPlat, script.QueryPlatAndBillNo, customsId)
 	if err != nil {
 		return "", errors.New(fmt.Sprintf("query plat and bill no failed, err:%v", err))
 	}
 
+	// 填充plat和bill no
+	fmt.Println("3. fill plat and bill no, customsId:", customsId)
 	for i := 0; i < len(rows); i++ {
 		row := rows[i]
 		row.BillNo = billPlat.BillNo
@@ -225,21 +242,22 @@ func makeBriefLwtForSplit(customsId string) (string, error) {
 	// 1. 查询子报关单号
 	fmt.Println("1. query customs split child, customsId:", customsId)
 	var customsIds []string
-	err := Db.Select(&customsIds, QueryCustomsSplitChild, customsId)
+	err := database.GetDB().Select(&customsIds, script.QueryCustomsSplitChild, customsId)
 	if err != nil {
+		log.Errorf("query customs split child customsIds failed, err:%v, sql:%s", err, script.QueryCustomsSplitChild)
 		return "", errors.New(fmt.Sprintf("query customs split child customsIds failed, err:%v", err))
 	}
 	// 2. 查询主单号的数据
 	fmt.Println("2. query customs base info, customsId:", customsId)
-	var customsBaseInfo CustomsBaseInfo
-	err = Db.Get(&customsBaseInfo, QueryCustomsBaseInfo, customsId)
+	var customsBaseInfo model.CustomsBaseInfo
+	err = database.GetDB().Get(&customsBaseInfo, script.QueryCustomsBaseInfo, customsId)
 	if err != nil {
 		return "", errors.New(fmt.Sprintf("query customs base info failed, err:%v", err))
 	}
 	// 3. 查询主单号的plat和bill no
 	fmt.Println("3. query plat and bill no, customsId:", customsId)
-	var billPlat BillNoAndPlatForCustoms
-	err = Db.Get(&billPlat, QueryPlatAndBillNo, customsId)
+	var billPlat model.BillNoAndPlatForCustoms
+	err = database.GetDB().Get(&billPlat, script.QueryPlatAndBillNo, customsId)
 	if err != nil {
 		return "", errors.New(fmt.Sprintf("query plat and bill no failed, err:%v", err))
 	}
@@ -255,8 +273,8 @@ func makeBriefLwtForSplit(customsId string) (string, error) {
 	// 有一个子单号的数据为空，就返回错误。不再继续执行
 	fmt.Println("5. loop fill brief lwt excel for split, customsIds:", customsIds)
 	for _, id := range customsIds {
-		var rows []ExcelColumnForBriefLwt
-		err = Db.Select(&rows, QueryBriefLwtDataForSplit, id)
+		var rows []model.ExcelColumnForBriefLwt
+		err = database.GetDB().Select(&rows, script.QueryBriefLwtDataForSplit, id)
 		if err != nil || len(rows) == 0 {
 			return "", errors.New(fmt.Sprintf("query brief lwt data for split failed, err:%v", err))
 		}
@@ -290,24 +308,28 @@ func makeBriefLwtForSplit(customsId string) (string, error) {
 func makeBriefLWT(customsId string) (string, error) {
 	// Is split into multiple sales channels?
 	if isSplitCustoms(customsId) {
+		fmt.Printf("-----Brief LWT, customsId is split, customsId:%s -------\n", customsId)
 		return makeBriefLwtForSplit(customsId)
 	} else {
+		fmt.Printf("-----Brief LWT, customsId is normal, customsId:%s --------\n", customsId)
 		return makeBriefLwtNormal(customsId)
 	}
 }
 
 // GenerateLWTExcel generate excel file for LWT,
 // error =nil returns lwt file link(oss)
-func generateExcelForOfficialLWT(rows []ExcelColumnForLwt) (string, error) {
+func generateExcelForOfficialLWT(rows []model.ExcelColumnForLwt) (string, error) {
 	declareCountry := rows[0].DeclareCountry
 	customId := rows[0].CustomsId
 	salesChannel := rows[0].SalesChannel
 
+	fmt.Println("2. ready for lwt file(template & save path), declareCountry:", declareCountry, "customId:", customId, "salesChannel:", salesChannel)
 	lwtFilePath, err := readyFowLwtFile(declareCountry, customId, salesChannel, false)
 	if err != nil {
 		return "", errors.New(fmt.Sprintf("Prepare LWT file failed, err:%v", err))
 	}
 
+	fmt.Println("3. fill lwt excel, declareCountry:", declareCountry)
 	if "BE" == strings.ToUpper(declareCountry) {
 		err = fillLwtExcelForBe(lwtFilePath, rows, 0)
 	} else {
@@ -318,36 +340,76 @@ func generateExcelForOfficialLWT(rows []ExcelColumnForLwt) (string, error) {
 		return "", errors.New(fmt.Sprintf("Fill LWT excel failed, err:%v", err))
 	}
 
+	fmt.Println("4. return lwt file name: ", lwtFilePath)
+
 	return filepath.Base(lwtFilePath), nil
 }
 
 // GenerateLWTExcel generate excel file for LWT,
 // error =nil returns lwt file link(oss)
-func generateExcelForBriefLWT(rows []ExcelColumnForBriefLwt) (string, error) {
+func generateExcelForBriefLWT(rows []model.ExcelColumnForBriefLwt) (string, error) {
 	declareCountry := rows[0].DeclareCountry
 	customId := rows[0].CustomsId
 	salesChannel := rows[0].SalesChannel
 
+	fmt.Println("4. ready for lwt file(template & save path), declareCountry:", declareCountry, "customId:", customId, "salesChannel:", salesChannel)
 	lwtFilePath, err := readyFowLwtFile(declareCountry, customId, salesChannel, true)
 	if err != nil {
 		return "", err
 	}
 
+	fmt.Println("5. fill brief lwt excel...")
 	err = fillBriefLwtExcel(lwtFilePath, rows, 0)
 	if err != nil {
 		return "", err
 	}
 
+	fmt.Println("6. return brief lwt file name: ", lwtFilePath)
 	return filepath.Base(lwtFilePath), nil
 }
 
 // readyFowLwtFile 准备LWT文件模版和存放路径。如果是拆分报关，salesChannel为split
 func readyFowLwtFile(declareCountry, customId, salesChannel string, brief bool) (string, error) {
+	cfg := config.GetConfig()
 	var templatePath string
+	salesChannel = strings.ToLower(salesChannel)
 	if brief {
-		templatePath = viper.GetString(fmt.Sprintf("lwt.template.brief.%s", strings.ToLower(salesChannel)))
+		if salesChannel == "amazon" {
+			fmt.Println("salesChannel:", salesChannel, "templatePath:", cfg.LWT.Template.Brief.Amazon)
+			templatePath = cfg.LWT.Template.Brief.Amazon
+		} else if salesChannel == "ebay" {
+			templatePath = cfg.LWT.Template.Brief.Ebay
+		} else if salesChannel == "c_discount" || salesChannel == "cdiscount" {
+			templatePath = cfg.LWT.Template.Brief.CDiscount
+		} else if salesChannel == "split" {
+			templatePath = cfg.LWT.Template.Brief.Split
+		}
 	} else {
-		templatePath = viper.GetString(fmt.Sprintf("lwt.template.official.%s.%s", strings.ToLower(declareCountry), strings.ToLower(salesChannel)))
+		lowerCountry := strings.ToLower(declareCountry)
+		lowerSalesChannel := strings.ToLower(salesChannel)
+
+		if lowerCountry == "nl" {
+			if lowerSalesChannel == "amazon" {
+				fmt.Println("lowerCountry:", lowerCountry, "lowerSalesChannel:", lowerSalesChannel, "templatePath:", cfg.LWT.Template.Official.NL.Amazon)
+				templatePath = cfg.LWT.Template.Official.NL.Amazon
+			} else if lowerSalesChannel == "ebay" {
+				templatePath = cfg.LWT.Template.Official.NL.Ebay
+			} else if lowerSalesChannel == "c_discount" || lowerSalesChannel == "cdiscount" {
+				templatePath = cfg.LWT.Template.Official.NL.CDiscount
+			} else if lowerSalesChannel == "split" {
+				templatePath = cfg.LWT.Template.Official.NL.Split
+			}
+		} else if lowerCountry == "be" {
+			if lowerSalesChannel == "amazon" {
+				templatePath = cfg.LWT.Template.Official.BE.Amazon
+			} else if lowerSalesChannel == "ebay" {
+				templatePath = cfg.LWT.Template.Official.BE.Ebay
+			} else if lowerSalesChannel == "c_discount" || lowerSalesChannel == "cdiscount" {
+				templatePath = cfg.LWT.Template.Official.BE.CDiscount
+			} else if lowerSalesChannel == "split" {
+				templatePath = cfg.LWT.Template.Official.BE.Split
+			}
+		}
 	}
 
 	if templatePath == "" {
@@ -358,7 +420,7 @@ func readyFowLwtFile(declareCountry, customId, salesChannel string, brief bool) 
 		return "", errors.New(fmt.Sprintf("Template file: %s does not exist", templatePath))
 	}
 
-	tmpDir := viper.GetString("lwt.tmp.dir")
+	tmpDir := cfg.LWT.Tmp.Dir
 	if !utils.IsDir(tmpDir) && !utils.CreateDir(tmpDir) {
 		return "", errors.New(fmt.Sprintf("Crate tmp directory: %s failed !", tmpDir))
 	}
@@ -404,7 +466,7 @@ var font = &excelize.Font{
 }
 
 // fillLwtExcelForNl fill data to lwt excel file for NL
-func fillLwtExcelForNl(lwtFilePath string, rows []ExcelColumnForLwt, sheetIdx int) error {
+func fillLwtExcelForNl(lwtFilePath string, rows []model.ExcelColumnForLwt, sheetIdx int) error {
 	f, err := excelize.OpenFile(lwtFilePath)
 	if err != nil {
 		fmt.Println("fill lwt excel file for nl,open file failed", err)
@@ -422,7 +484,8 @@ func fillLwtExcelForNl(lwtFilePath string, rows []ExcelColumnForLwt, sheetIdx in
 
 	fmt.Printf("sheetName: %s\n", sheetName)
 
-	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: FloatDecimalPlaces})
+	decimalPlaces := FloatDecimalPlaces
+	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: &decimalPlaces})
 	style, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment})
 	stylePercent, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, NumFmt: 10, Font: font})
 
@@ -432,7 +495,7 @@ func fillLwtExcelForNl(lwtFilePath string, rows []ExcelColumnForLwt, sheetIdx in
 		for i := 0; i < len(rows); i++ {
 			rowNumber := InsertRowFirst + i
 
-			err = f.InsertRow(sheetName, rowNumber)
+			err = f.InsertRows(sheetName, rowNumber, 1)
 			row := rows[i]
 
 			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("A%d", rowNumber), row.ItemNumber, style)
@@ -515,7 +578,7 @@ func fillLwtExcelForNl(lwtFilePath string, rows []ExcelColumnForLwt, sheetIdx in
 			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AP%d", rowNumber), subtotalFormula, styleFormula)
 
 			// customs value include duty
-			customsValueIncludeDutyFormula := fmt.Sprintf("=Round(Q%d-(S%d+V%d+X%d+Z%d+AB%d+AC%d+AE%d+AP%d),6)",
+			customsValueIncludeDutyFormula := fmt.Sprintf("=Round(Q%d-(S%d+V%d+X%d+Z%d+AB%d+AC%d+AE%d+AP%d),2)",
 				rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber)
 			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AQ%d", rowNumber), customsValueIncludeDutyFormula, styleFormula)
 
@@ -541,7 +604,7 @@ func fillLwtExcelForNl(lwtFilePath string, rows []ExcelColumnForLwt, sheetIdx in
 }
 
 // fillLwtExcelForBe fill data to lwt excel file for BE
-func fillLwtExcelForBe(lwtFilePath string, rows []ExcelColumnForLwt, sheetIdx int) error {
+func fillLwtExcelForBe(lwtFilePath string, rows []model.ExcelColumnForLwt, sheetIdx int) error {
 	f, err := excelize.OpenFile(lwtFilePath)
 	if err != nil {
 		fmt.Println("fill lwt excel file for be,open file failed", err)
@@ -558,7 +621,8 @@ func fillLwtExcelForBe(lwtFilePath string, rows []ExcelColumnForLwt, sheetIdx in
 
 	fmt.Printf("sheetName: %s\n", sheetName)
 
-	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: FloatDecimalPlaces})
+	decimalPlaces := FloatDecimalPlaces
+	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: &decimalPlaces})
 	style, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment})
 	stylePercent, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, NumFmt: 10, Font: font})
 
@@ -568,7 +632,7 @@ func fillLwtExcelForBe(lwtFilePath string, rows []ExcelColumnForLwt, sheetIdx in
 		for i := 0; i < len(rows); i++ {
 			rowNumber := InsertRowFirst + i
 
-			err = f.InsertRow(sheetName, rowNumber)
+			err = f.InsertRows(sheetName, rowNumber, 1)
 			row := rows[i]
 
 			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("A%d", rowNumber), row.ItemNumber, style)
@@ -657,7 +721,7 @@ func fillLwtExcelForBe(lwtFilePath string, rows []ExcelColumnForLwt, sheetIdx in
 }
 
 // fillBriefLwtExcel
-func fillBriefLwtExcel(lwtFilePath string, rows []ExcelColumnForBriefLwt, sheetIdx int) error {
+func fillBriefLwtExcel(lwtFilePath string, rows []model.ExcelColumnForBriefLwt, sheetIdx int) error {
 	f, err := excelize.OpenFile(lwtFilePath)
 	if err != nil {
 		fmt.Println(err)
@@ -675,7 +739,8 @@ func fillBriefLwtExcel(lwtFilePath string, rows []ExcelColumnForBriefLwt, sheetI
 
 	fmt.Printf("sheetName: %s\n", sheetName)
 
-	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: FloatDecimalPlaces})
+	decimalPlaces := FloatDecimalPlaces
+	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: &decimalPlaces})
 	style, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment})
 
 	if err != nil {
@@ -688,7 +753,7 @@ func fillBriefLwtExcel(lwtFilePath string, rows []ExcelColumnForBriefLwt, sheetI
 			fmt.Println("Begin to fill excel, at:", i)
 			rowNumber := InsertRowFirst + i
 
-			err = f.InsertRow(sheetName, rowNumber)
+			err = f.InsertRows(sheetName, rowNumber, 1)
 			row := rows[i]
 
 			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("A%d", rowNumber), row.ItemNumber, style)

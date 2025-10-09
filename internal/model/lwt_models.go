@@ -1,4 +1,4 @@
-package lwt
+package model
 
 import "database/sql"
 
@@ -51,6 +51,47 @@ type ExcelColumnForLwt struct {
 	CustomsValueIncludeDuty float64 `db:"customs_value_include_duty"`
 	CustomsValue            float64 `db:"customs_value"`
 	FinalDeclaredValue      float64 `db:"final_declared_value"`
+}
+
+// ExcelColumnForLwtAdjustment 修改LWT时，需要计算的因子
+type ExcelColumnForLwtAdjustment struct {
+	// 行号
+	RowNumber int `json:"row_number"`
+
+	// 调整参数时，仅需要计算的因子
+	ItemNumber int `json:"item_number"`
+
+	ProductNo              string  `json:"product_no"`
+	Quantity               int     `json:"quantity"`
+	NetWeight              float64 `json:"net_weight"`
+	Height                 float64 `json:"height"`
+	Width                  float64 `json:"width"`
+	Length                 float64 `json:"length"`
+	Price                  float64 `json:"price"`
+	EuVatRate              float64 `json:"eu_vat_rate"`
+	ReferralFeeRate        float64 `json:"referral_fee_rate"`
+	ProcessingFeeRate      float64 `json:"processing_fee_rate"`
+	AuthorisationFee       float64 `json:"authorisation_fee"`
+	InterchangeableFeeRate float64 `json:"interchangeable_fee_rate"`
+	FulfilmentFee          float64 `json:"fulfilment_fee"`
+	StorageFeeRate         float64 `json:"storage_fee_rate"`
+	GroundFeeRate          float64 `json:"ground_fee_rate"`
+	WarehouseFeeRate       float64 `json:"warehouse_fee_rate"`
+	ClearanceRate          float64 `json:"clearance_rate"`
+	DeliveryRate           float64 `json:"delivery_rate"`
+	EuDutyRate             float64 `json:"eu_duty_rate"`
+	WithinFeeRate          float64 `json:"within_fee_rate"`
+
+	// 是否已经调整
+	IsAdjusted bool `json:"is_adjusted"`
+	// 是否存在差异
+	HasDiff bool `json:"has_diff"`
+
+	// 以下字段用于标记需要调整的值
+	// FinalDeclaredValueOld 当前申报价值
+	FinalDeclaredValueOld float64 `json:"final_declared_value_old"`
+	// FinalDeclaredValueTarget 原报关单申报价值（微调的目标值）
+	FinalDeclaredValueTarget float64 `json:"final_declared_value_target"`
 }
 
 // CustomsBaseInfo customs base info, include customs id, declare country, sales channel
@@ -112,19 +153,4 @@ type BillNoAndPlatForCustoms struct {
 type TrackingNoForCustoms struct {
 	IndexNo    string         `db:"index_no"`
 	TrackingNo sql.NullString `db:"tracking_no"`
-}
-
-// ResponseForLwt response for Lwt request
-type ResponseForLwt struct {
-	CustomsId   string `json:"customs_id"`
-	Status      string `json:"status"`
-	LwtFilename string `json:"lwt_filename"`
-	Error       string `json:"errors"`
-	Brief       bool   `json:"brief"`
-}
-
-// RequestForLwt Request for Lwt
-type RequestForLwt struct {
-	CustomsId string `json:"customs_id"`
-	Brief     bool   `json:"brief"`
 }

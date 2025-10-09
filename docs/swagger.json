@@ -4,6 +4,46 @@
         "contact": {}
     },
     "paths": {
+        "/lwt/adjust": {
+            "post": {
+                "description": "Adjust LWT calculation parameters and regenerate LWT file.IMPORTANT: The customs's LWT file must be generated first.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "lwt"
+                ],
+                "summary": "Adjust LWT parameters",
+                "parameters": [
+                    {
+                        "description": "LWT adjustment request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/model.RequestForLwtAdjustment"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/model.ResponseForLwtAdjustment"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/model.ResponseForLwtAdjustment"
+                        }
+                    }
+                }
+            }
+        },
         "/lwt/{filename}": {
             "get": {
                 "description": "get file by filename",
@@ -39,6 +79,67 @@
                     "400": {
                         "description": "Bad Request"
                     }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "model.LwtArticleAdjustment": {
+            "type": "object",
+            "properties": {
+                "article_no": {
+                    "description": "ArticleNo 品类序号",
+                    "type": "integer"
+                },
+                "final_declared_value_old": {
+                    "description": "FinalDeclaredValueOld 当前申报价值",
+                    "type": "number"
+                },
+                "final_declared_value_target": {
+                    "description": "FinalDeclaredValueTarget 原报关单申报价值（微调的目标值）",
+                    "type": "number"
+                }
+            }
+        },
+        "model.RequestForLwtAdjustment": {
+            "type": "object",
+            "properties": {
+                "adjustments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/model.LwtArticleAdjustment"
+                    }
+                },
+                "customs_id": {
+                    "description": "CustomsId 海关编号，非必填",
+                    "type": "string"
+                },
+                "lwt_filename": {
+                    "description": "LwtFilename 已经生成的LWT文件名",
+                    "type": "string"
+                }
+            }
+        },
+        "model.ResponseForLwtAdjustment": {
+            "type": "object",
+            "properties": {
+                "customs_id": {
+                    "description": "CustomsId 海关编号，非必填",
+                    "type": "string"
+                },
+                "errors": {
+                    "type": "string"
+                },
+                "has_diff": {
+                    "description": "是否依然有差异，true表示有差异，false表示没有差异",
+                    "type": "boolean"
+                },
+                "lwt_filename": {
+                    "description": "LwtFilename 用于下载新的LWT文件",
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
                 }
             }
         }
