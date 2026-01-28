@@ -35,6 +35,7 @@ var LwtExcelSheetMap = map[string]int{
 }
 
 // GenerateLWTExcel generate excel file for LWT
+// incProfit 从 MQ 消息的 RequestForLwt.IncProfit 字段获取，如果消息中未传递此字段则默认为 false
 func GenerateLWTExcel(data string) {
 	response := &model.ResponseForLwt{
 		Status:      "failed",
@@ -43,6 +44,12 @@ func GenerateLWTExcel(data string) {
 	}
 	requestForLwt, err := deserializeRequest(data)
 	response.Brief = requestForLwt.Brief
+	// 从 MQ 消息中获取 incProfit，如果未传递则默认为 false
+	effectiveIncProfit := false
+	if requestForLwt.IncProfit != nil {
+		effectiveIncProfit = *requestForLwt.IncProfit
+	}
+	response.IncProfit = effectiveIncProfit
 
 	if err != nil {
 		response.Error = fmt.Sprintf("Deserialization of MQ message failed, err:%v", err)
@@ -51,7 +58,7 @@ func GenerateLWTExcel(data string) {
 		if requestForLwt.Brief {
 			lwtFilename, err = makeBriefLWT(requestForLwt.CustomsId)
 		} else {
-			lwtFilename, err = makeOfficialLWT(requestForLwt.CustomsId)
+			lwtFilename, err = makeOfficialLWT(requestForLwt.CustomsId, effectiveIncProfit)
 		}
 
 		if err != nil {
@@ -124,7 +131,7 @@ func isSplitCustoms(customsId string) bool {
 }
 
 // makeOfficialLWTForNormal 普通的报关单生成LWT（未拆单报关）
-func makeOfficialLWTForNormal(customsId string) (string, error) {
+func makeOfficialLWTForNormal(customsId string, incProfit bool) (string, error) {
 	fmt.Println("1. query lwt data, customsId:", customsId)
 	var rows []model.ExcelColumnForLwt
 	err := database.GetDB().Select(&rows, script.QueryLwtData, customsId)
@@ -136,31 +143,31 @@ func makeOfficialLWTForNormal(customsId string) (string, error) {
 		return "", errors.New("cant not query rows for lwt")
 	}
 
-	return generateExcelForOfficialLWT(rows)
+	return generateExcelForOfficialLWT(rows, incProfit)
 }
 
 // makeOfficialLWTForSplit 拆单报关单生成LWT
-func makeOfficialLWTForSplit(customsId string) (string, error) {
+func makeOfficialLWTForSplit(customsId string, incProfit bool) (string, error) {
 	// 1. 查询子报关单号
 	fmt.Println("1. query customs split child, customsId:", customsId)
 	var customsIds []string
 	err := database.GetDB().Select(&customsIds, script.QueryCustomsSplitChild, customsId)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("query customs split child customsIds failed, err:%v", err))
+		return "", fmt.Errorf("query customs split child customsIds failed, err:%v", err)
 	}
 	// 2. 查询主单号的数据
 	fmt.Println("2. query customs base info, customsId:", customsId)
 	var customsBaseInfo model.CustomsBaseInfo
 	err = database.GetDB().Get(&customsBaseInfo, script.QueryCustomsBaseInfo, customsId)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("query customs base info failed, err:%v", err))
+		return "", fmt.Errorf("query customs base info failed, err:%v", err)
 	}
 
 	// 3. 准备LWT文件模版及存放路径
 	fmt.Println("3. ready for lwt file(template & save path), customsId:", customsId)
-	fileSavePath, err := readyFowLwtFile(customsBaseInfo.DeclareCountry, customsId, "split", false)
+	fileSavePath, err := readyFowLwtFile(customsBaseInfo.DeclareCountry, customsId, "split", false, incProfit)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("ready file for lwt failed, err:%v", err))
+		return "", fmt.Errorf("ready file for lwt failed, err:%v", err)
 	}
 
 	// 4. 查询子单号的LWT 数据，并填充到LWT文件中
@@ -176,16 +183,24 @@ func makeOfficialLWTForSplit(customsId string) (string, error) {
 		salesChannel := strings.ToLower(rows[0].SalesChannel)
 		idx, ok := LwtExcelSheetMap[salesChannel]
 		if !ok {
-			return "", errors.New(fmt.Sprintf("The map LwtExcelSheetMap dont have the sales channel %s.", salesChannel))
+			return "", fmt.Errorf("The map LwtExcelSheetMap dont have the sales channel %s.", salesChannel)
 		}
 
 		if customsBaseInfo.DeclareCountry == "BE" {
-			err = fillLwtExcelForBe(fileSavePath, rows, idx)
+			if incProfit {
+				err = fillLwtExcelForBeIncProfit(fileSavePath, rows, idx)
+			} else {
+				err = fillLwtExcelForBe(fileSavePath, rows, idx)
+			}
 		} else {
-			err = fillLwtExcelForNl(fileSavePath, rows, idx)
+			if incProfit {
+				err = fillLwtExcelForNlIncProfit(fileSavePath, rows, idx)
+			} else {
+				err = fillLwtExcelForNl(fileSavePath, rows, idx)
+			}
 		}
 		if err != nil {
-			return "", errors.New(fmt.Sprintf("fill lwt excel failed, err:%v", err))
+			return "", fmt.Errorf("fill lwt excel failed, err:%v", err)
 		}
 	}
 	// 5. 返回文件名
@@ -194,14 +209,14 @@ func makeOfficialLWTForSplit(customsId string) (string, error) {
 }
 
 // makeOfficialLWT Make official LWT Excel file
-func makeOfficialLWT(customsId string) (string, error) {
+func makeOfficialLWT(customsId string, incProfit bool) (string, error) {
 	// Is split into multiple sales channels?
 	if isSplitCustoms(customsId) {
 		fmt.Printf("-----LWT, customsId is split, customsId:%s -------\n", customsId)
-		return makeOfficialLWTForSplit(customsId)
+		return makeOfficialLWTForSplit(customsId, incProfit)
 	} else {
 		fmt.Printf("-----LWT, customsId is normal, customsId:%s --------\n", customsId)
-		return makeOfficialLWTForNormal(customsId)
+		return makeOfficialLWTForNormal(customsId, incProfit)
 	}
 }
 
@@ -211,18 +226,18 @@ func makeBriefLwtNormal(customsId string) (string, error) {
 	var rows []model.ExcelColumnForBriefLwt
 	err := database.GetDB().Select(&rows, script.QueryBriefLwtData, customsId)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("query brief lwt data failed, err:%v", err))
+		return "", fmt.Errorf("query brief lwt data failed, err:%v", err)
 	}
 
 	if len(rows) == 0 {
-		return "", errors.New("cant not query rows for lwt")
+		return "", fmt.Errorf("cant not query rows for lwt")
 	}
 
 	fmt.Println("2. query plat and bill no, customsId:", customsId)
 	var billPlat model.BillNoAndPlatForCustoms
 	err = database.GetDB().Get(&billPlat, script.QueryPlatAndBillNo, customsId)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("query plat and bill no failed, err:%v", err))
+		return "", fmt.Errorf("query plat and bill no failed, err:%v", err)
 	}
 
 	// 填充plat和bill no
@@ -245,28 +260,28 @@ func makeBriefLwtForSplit(customsId string) (string, error) {
 	err := database.GetDB().Select(&customsIds, script.QueryCustomsSplitChild, customsId)
 	if err != nil {
 		log.Errorf("query customs split child customsIds failed, err:%v, sql:%s", err, script.QueryCustomsSplitChild)
-		return "", errors.New(fmt.Sprintf("query customs split child customsIds failed, err:%v", err))
+		return "", fmt.Errorf("query customs split child customsIds failed, err:%v", err)
 	}
 	// 2. 查询主单号的数据
 	fmt.Println("2. query customs base info, customsId:", customsId)
 	var customsBaseInfo model.CustomsBaseInfo
 	err = database.GetDB().Get(&customsBaseInfo, script.QueryCustomsBaseInfo, customsId)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("query customs base info failed, err:%v", err))
+		return "", fmt.Errorf("query customs base info failed, err:%v", err)
 	}
 	// 3. 查询主单号的plat和bill no
 	fmt.Println("3. query plat and bill no, customsId:", customsId)
 	var billPlat model.BillNoAndPlatForCustoms
 	err = database.GetDB().Get(&billPlat, script.QueryPlatAndBillNo, customsId)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("query plat and bill no failed, err:%v", err))
+		return "", fmt.Errorf("query plat and bill no failed, err:%v", err)
 	}
 
 	// 4. 准备LWT文件模版及存放路径
 	fmt.Println("4. ready for lwt file(template & save path), customsId:", customsId)
-	fileSavePath, err := readyFowLwtFile(customsBaseInfo.DeclareCountry, customsId, "split", true)
+	fileSavePath, err := readyFowLwtFile(customsBaseInfo.DeclareCountry, customsId, "split", true, false)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("ready file for lwt failed, err:%v", err))
+		return "", fmt.Errorf("ready file for lwt failed, err:%v", err)
 	}
 
 	// 4. 查询子单号的LWT 数据，并填充到LWT文件中
@@ -276,13 +291,13 @@ func makeBriefLwtForSplit(customsId string) (string, error) {
 		var rows []model.ExcelColumnForBriefLwt
 		err = database.GetDB().Select(&rows, script.QueryBriefLwtDataForSplit, id)
 		if err != nil || len(rows) == 0 {
-			return "", errors.New(fmt.Sprintf("query brief lwt data for split failed, err:%v", err))
+			return "", fmt.Errorf("query brief lwt data for split failed, err:%v", err)
 		}
 
 		salesChannel := strings.ToLower(rows[0].SalesChannel)
 		idx, ok := LwtExcelSheetMap[salesChannel]
 		if !ok {
-			return "", errors.New(fmt.Sprintf("The map LwtExcelSheetMap dont have the sales channel %s.", salesChannel))
+			return "", fmt.Errorf("The map LwtExcelSheetMap dont have the sales channel %s.", salesChannel)
 		}
 		// 填充plat和bill no
 		fmt.Println("5. fill plat and bill no, child customsId:", id)
@@ -296,7 +311,7 @@ func makeBriefLwtForSplit(customsId string) (string, error) {
 		err = fillBriefLwtExcel(fileSavePath, rows, idx)
 
 		if err != nil {
-			return "", errors.New(fmt.Sprintf("fill brief lwt excel failed, err:%v", err))
+			return "", fmt.Errorf("fill brief lwt excel failed, err:%v", err)
 		}
 	}
 	// 5. 返回文件名
@@ -318,26 +333,42 @@ func makeBriefLWT(customsId string) (string, error) {
 
 // GenerateLWTExcel generate excel file for LWT,
 // error =nil returns lwt file link(oss)
-func generateExcelForOfficialLWT(rows []model.ExcelColumnForLwt) (string, error) {
+func generateExcelForOfficialLWT(rows []model.ExcelColumnForLwt, incProfit bool) (string, error) {
 	declareCountry := rows[0].DeclareCountry
 	customId := rows[0].CustomsId
 	salesChannel := rows[0].SalesChannel
 
-	fmt.Println("2. ready for lwt file(template & save path), declareCountry:", declareCountry, "customId:", customId, "salesChannel:", salesChannel)
-	lwtFilePath, err := readyFowLwtFile(declareCountry, customId, salesChannel, false)
+	fmt.Println("2. ready for lwt file(template & save path), declareCountry:", declareCountry, "customId:", customId, "salesChannel:", salesChannel, "incProfit:", incProfit)
+
+	// 注意：当前仅ebay 支持利润率计算,不区分大小写
+	if strings.ToLower(salesChannel) != "ebay" {
+		fmt.Println("**** DEBUG: salesChannel not ebay, incProfit set to: false")
+		incProfit = false
+	}
+
+	lwtFilePath, err := readyFowLwtFile(declareCountry, customId, salesChannel, false, incProfit)
+	fmt.Println("lwtFilePath: ", lwtFilePath)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("Prepare LWT file failed, err:%v", err))
+		return "", fmt.Errorf("Prepare LWT file failed, err:%v", err)
 	}
 
 	fmt.Println("3. fill lwt excel, declareCountry:", declareCountry)
 	if "BE" == strings.ToUpper(declareCountry) {
-		err = fillLwtExcelForBe(lwtFilePath, rows, 0)
+		if incProfit {
+			err = fillLwtExcelForBeIncProfit(lwtFilePath, rows, 0)
+		} else {
+			err = fillLwtExcelForBe(lwtFilePath, rows, 0)
+		}
 	} else {
-		err = fillLwtExcelForNl(lwtFilePath, rows, 0)
+		if incProfit {
+			err = fillLwtExcelForNlIncProfit(lwtFilePath, rows, 0)
+		} else {
+			err = fillLwtExcelForNl(lwtFilePath, rows, 0)
+		}
 	}
 
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("Fill LWT excel failed, err:%v", err))
+		return "", fmt.Errorf("Fill LWT excel failed, err:%v", err)
 	}
 
 	fmt.Println("4. return lwt file name: ", lwtFilePath)
@@ -353,7 +384,7 @@ func generateExcelForBriefLWT(rows []model.ExcelColumnForBriefLwt) (string, erro
 	salesChannel := rows[0].SalesChannel
 
 	fmt.Println("4. ready for lwt file(template & save path), declareCountry:", declareCountry, "customId:", customId, "salesChannel:", salesChannel)
-	lwtFilePath, err := readyFowLwtFile(declareCountry, customId, salesChannel, true)
+	lwtFilePath, err := readyFowLwtFile(declareCountry, customId, salesChannel, true, false)
 	if err != nil {
 		return "", err
 	}
@@ -369,67 +400,103 @@ func generateExcelForBriefLWT(rows []model.ExcelColumnForBriefLwt) (string, erro
 }
 
 // readyFowLwtFile 准备LWT文件模版和存放路径。如果是拆分报关，salesChannel为split
-func readyFowLwtFile(declareCountry, customId, salesChannel string, brief bool) (string, error) {
+// incProfit: true表示计算利润率，false表示不计算利润率,默认不计算利润率(表示当前最新模版文件)
+func readyFowLwtFile(declareCountry, customId, salesChannel string, brief bool, incProfit bool) (string, error) {
 	cfg := config.GetConfig()
 	var templatePath string
+
+	// 添加调试日志：打印所有参数值
+	fmt.Printf("**** DEBUG readyFowLwtFile: declareCountry=%s, customId=%s, salesChannel=%s, brief=%v, incProfit=%v\n",
+		declareCountry, customId, salesChannel, brief, incProfit)
+
 	salesChannel = strings.ToLower(salesChannel)
+	salesChannel = strings.ToLower(salesChannel)
+	declareCountry = strings.ToLower(declareCountry)
+
+	// 添加调试日志：打印转换后的值
+	fmt.Printf("**** DEBUG after toLower: declareCountry=%s, salesChannel=%s\n", declareCountry, salesChannel)
+
 	if brief {
-		if salesChannel == "amazon" {
-			fmt.Println("salesChannel:", salesChannel, "templatePath:", cfg.LWT.Template.Brief.Amazon)
+		fmt.Println("**** DEBUG: 进入 brief 分支")
+		switch salesChannel {
+		case "amazon":
 			templatePath = cfg.LWT.Template.Brief.Amazon
-		} else if salesChannel == "ebay" {
+		case "ebay":
 			templatePath = cfg.LWT.Template.Brief.Ebay
-		} else if salesChannel == "c_discount" || salesChannel == "cdiscount" {
+		case "cdiscount", "c_discount":
 			templatePath = cfg.LWT.Template.Brief.CDiscount
-		} else if salesChannel == "split" {
+		case "split":
 			templatePath = cfg.LWT.Template.Brief.Split
+		default:
+			return "", fmt.Errorf("SalesChannel: %s not supported for BRIEF LWT.", salesChannel)
 		}
 	} else {
-		lowerCountry := strings.ToLower(declareCountry)
-		lowerSalesChannel := strings.ToLower(salesChannel)
-
-		if lowerCountry == "nl" {
-			if lowerSalesChannel == "amazon" {
-				fmt.Println("lowerCountry:", lowerCountry, "lowerSalesChannel:", lowerSalesChannel, "templatePath:", cfg.LWT.Template.Official.NL.Amazon)
+		fmt.Println("**** DEBUG: 进入 else 分支 (非 brief)")
+		switch declareCountry {
+		case "nl":
+			fmt.Println("**** DEBUG: declareCountry 是 nl")
+			switch salesChannel {
+			case "amazon":
 				templatePath = cfg.LWT.Template.Official.NL.Amazon
-			} else if lowerSalesChannel == "ebay" {
-				templatePath = cfg.LWT.Template.Official.NL.Ebay
-			} else if lowerSalesChannel == "c_discount" || lowerSalesChannel == "cdiscount" {
+			case "ebay":
+				if incProfit {
+					templatePath = cfg.LWT.Template.Profit.NL.Ebay
+				} else {
+					templatePath = cfg.LWT.Template.Official.NL.Ebay
+				}
+			case "cdiscount", "c_discount":
 				templatePath = cfg.LWT.Template.Official.NL.CDiscount
-			} else if lowerSalesChannel == "split" {
+			case "split":
 				templatePath = cfg.LWT.Template.Official.NL.Split
+			default:
+				return "", fmt.Errorf("SalesChannel: %s not supported for LWT.", salesChannel)
 			}
-		} else if lowerCountry == "be" {
-			if lowerSalesChannel == "amazon" {
+		case "be":
+			fmt.Println("**** DEBUG: declareCountry 是 be")
+			switch salesChannel {
+			case "amazon":
 				templatePath = cfg.LWT.Template.Official.BE.Amazon
-			} else if lowerSalesChannel == "ebay" {
-				templatePath = cfg.LWT.Template.Official.BE.Ebay
-			} else if lowerSalesChannel == "c_discount" || lowerSalesChannel == "cdiscount" {
+			case "ebay":
+				fmt.Printf("**** DEBUG: salesChannel 是 ebay, incProfit=%v\n", incProfit)
+				if incProfit {
+					fmt.Println("**** profit.be.ebay: ", cfg.LWT.Template.Profit.BE.Ebay)
+					templatePath = cfg.LWT.Template.Profit.BE.Ebay
+				} else {
+					templatePath = cfg.LWT.Template.Official.BE.Ebay
+				}
+			case "cdiscount", "c_discount":
 				templatePath = cfg.LWT.Template.Official.BE.CDiscount
-			} else if lowerSalesChannel == "split" {
+			case "split":
 				templatePath = cfg.LWT.Template.Official.BE.Split
+			default:
+				fmt.Printf("**** DEBUG: salesChannel=%s 不匹配任何 case，进入 default\n", salesChannel)
+				return "", fmt.Errorf("SalesChannel: %s not supported for LWT.", salesChannel)
 			}
+		default:
+			fmt.Printf("**** DEBUG: declareCountry=%s 不匹配任何 case，进入 default\n", declareCountry)
+			return "", fmt.Errorf("Country: %s not supported for LWT.", declareCountry)
 		}
 	}
 
+	fmt.Println("**** templatePath: ", templatePath)
 	if templatePath == "" {
-		return "", errors.New(fmt.Sprintf("SalesChannel: %s not supports to LWT.", salesChannel))
+		return "", fmt.Errorf("SalesChannel: %s not supports to LWT.", salesChannel)
 	}
 
 	if !utils.IsExists(templatePath) {
-		return "", errors.New(fmt.Sprintf("Template file: %s does not exist", templatePath))
+		return "", fmt.Errorf("Template file: %s does not exist", templatePath)
 	}
 
 	tmpDir := cfg.LWT.Tmp.Dir
 	if !utils.IsDir(tmpDir) && !utils.CreateDir(tmpDir) {
-		return "", errors.New(fmt.Sprintf("Crate tmp directory: %s failed !", tmpDir))
+		return "", fmt.Errorf("Crate tmp directory: %s failed !", tmpDir)
 	}
 
 	now := time.Now()
 	timestamp := now.Format(TimeLayout)
 	saveDir := filepath.Join(tmpDir, strconv.Itoa(now.Year()), strconv.Itoa(int(now.Month())))
 	if !utils.IsDir(saveDir) && !utils.CreateDir(saveDir) {
-		return "", errors.New(fmt.Sprintf("Create save dir: %s failed !", saveDir))
+		return "", fmt.Errorf("Create save dir: %s failed !", saveDir)
 	}
 	var lwtFilePath string
 	if brief {
@@ -442,7 +509,7 @@ func readyFowLwtFile(declareCountry, customId, salesChannel string, brief bool) 
 
 	err := utils.Copy(templatePath, lwtFilePath)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("Create lwt file: %s form template file: %s failed!", lwtFilePath, templatePath))
+		return "", fmt.Errorf("Create lwt file: %s form template file: %s failed!", lwtFilePath, templatePath)
 	}
 
 	return lwtFilePath, nil
@@ -463,6 +530,141 @@ var alignment = &excelize.Alignment{
 
 var font = &excelize.Font{
 	Color: "#F00000",
+}
+
+// fillLwtExcelForNl fill data to lwt excel file for NL(include profit rate calculation and all ecp fees calculation)
+func fillLwtExcelForNlIncProfit(lwtFilePath string, rows []model.ExcelColumnForLwt, sheetIdx int) error {
+	f, err := excelize.OpenFile(lwtFilePath)
+	if err != nil {
+		fmt.Println("fill lwt excel file for nl include profit,open file failed", err)
+	}
+
+	defer func() {
+		// Close the spreadsheet.
+		if err := f.Close(); err != nil {
+		}
+	}()
+
+	f.SetActiveSheet(sheetIdx)
+
+	sheetName := f.GetSheetName(sheetIdx)
+
+	fmt.Printf("sheetName: %s\n", sheetName)
+
+	decimalPlaces := FloatDecimalPlaces
+	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: &decimalPlaces})
+	style, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment})
+	stylePercent, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, NumFmt: 10, Font: font})
+
+	if err != nil {
+		log.Errorf("Create excel syle failed: %v", err)
+	} else {
+		for i := 0; i < len(rows); i++ {
+			rowNumber := InsertRowFirst + i
+
+			err = f.InsertRows(sheetName, rowNumber, 1)
+			row := rows[i]
+
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("A%d", rowNumber), row.ItemNumber, style)
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("B%d", rowNumber), row.ProductNo, style)
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("C%d", rowNumber), row.Description, style)
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("D%d", rowNumber), row.Quantity, style)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("E%d", rowNumber), row.NetWeight, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("F%d", rowNumber), row.Height, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("G%d", rowNumber), row.Width, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("H%d", rowNumber), row.Length, styleFormula)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("I%d", rowNumber), fmt.Sprintf("=Round((F%d*G%d*H%d)/1000000,6)", rowNumber, rowNumber, rowNumber), styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("J%d", rowNumber), fmt.Sprintf("=Round(I%d*35.315,6)", rowNumber), styleFormula)
+
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("K%d", rowNumber), row.Country, style)
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("L%d", rowNumber), row.HsCode, style)
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("M%d", rowNumber), row.WebLink, style)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("N%d", rowNumber), 0.0, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("O%d", rowNumber), 0.0, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("P%d", rowNumber), row.Price, styleFormula)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("Q%d", rowNumber), fmt.Sprintf("=P%d", rowNumber), styleFormula)
+
+			// marketplace
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("R%d", rowNumber), row.EuVatRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("S%d", rowNumber), fmt.Sprintf("=Round(Q%d*(1-1/(1+R%d)), 6)", rowNumber, rowNumber), styleFormula)
+
+			// platform cost(ecp fees)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("T%d", rowNumber), row.ReferralFeeRate, styleFormula)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("U%d", rowNumber), fmt.Sprintf("=T%d", rowNumber), stylePercent)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("V%d", rowNumber), fmt.Sprintf("=Round(T%d*Q%d,6)", rowNumber, rowNumber), styleFormula)
+			// 原计算模版 多出的费用
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("W%d", rowNumber), row.ClosingFee, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("X%d", rowNumber), row.HighVolumeListingFee, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("Y%d", rowNumber), row.ProcessingFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("Z%d", rowNumber), fmt.Sprintf("=Round(Y%d*Q%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AA%d", rowNumber), row.AuthorisationFee, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AB%d", rowNumber), fmt.Sprintf("=AA%d", rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AC%d", rowNumber), row.InterchangeableFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AD%d", rowNumber), fmt.Sprintf("=Round(AC%d*Q%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AE%d", rowNumber), row.FulfilmentFee, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AF%d", rowNumber), row.StorageFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AG%d", rowNumber), fmt.Sprintf("=Round(AF%d*I%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AH%d", rowNumber), row.AdvertisingFee, styleFormula)
+
+			// profit
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AI%d", rowNumber), row.ProfitRate, styleFormula)
+			profitFormula := fmt.Sprintf("=Round(AI%d*Q%d,6)",rowNumber, rowNumber)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AJ%d", rowNumber), profitFormula, styleFormula)
+
+			// local cost
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AK%d", rowNumber), row.GroundFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AL%d", rowNumber), fmt.Sprintf("=Round(AK%d*E%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AM%d", rowNumber), row.WarehouseFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AN%d", rowNumber), fmt.Sprintf("=Round(AM%d*E%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AO%d", rowNumber), row.ClearanceRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AP%d", rowNumber), fmt.Sprintf("=Round(AO%d*E%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AQ%d", rowNumber), row.DeliveryRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AR%d", rowNumber), fmt.Sprintf("=Round(AQ%d*E%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AS%d", rowNumber), row.WithinFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AT%d", rowNumber), fmt.Sprintf("=Round(AS%d*E%d,6)", rowNumber, rowNumber), styleFormula)
+
+			// subtotal
+			subtotalFormula := fmt.Sprintf("=Round(AL%d+AN%d+AP%d+AR%d+AT%d,6)", rowNumber, rowNumber, rowNumber, rowNumber, rowNumber)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AU%d", rowNumber), subtotalFormula, styleFormula)
+
+			// customs value include duty
+			customsValueIncludeDutyFormula := fmt.Sprintf("=Round(Q%d-(S%d+V%d+W%d+X%d+Z%d+AB%d+AD%d+AE%d+AG%d+AH%d+AJ%d+AU%d),2)",
+				rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AV%d", rowNumber), customsValueIncludeDutyFormula, styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AX%d", rowNumber), row.EuDutyRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AY%d", rowNumber), fmt.Sprintf("=AX%d", rowNumber), stylePercent)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AW%d", rowNumber), fmt.Sprintf("=Round(AV%d/(1+AX%d),2)", rowNumber, rowNumber), styleFormula)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AZ%d", rowNumber), fmt.Sprintf("=Round(AW%d*AX%d,2)", rowNumber, rowNumber), styleFormula)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("BA%d", rowNumber), fmt.Sprintf("=Round(AW%d*D%d,2)", rowNumber, rowNumber), styleFormula)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// Save the spreadsheet with the origin path.
+	if err = f.Save(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // fillLwtExcelForNl fill data to lwt excel file for NL
@@ -590,6 +792,141 @@ func fillLwtExcelForNl(lwtFilePath string, rows []model.ExcelColumnForLwt, sheet
 			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AU%d", rowNumber), fmt.Sprintf("=Round(AR%d*AS%d,2)", rowNumber, rowNumber), styleFormula)
 
 			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AV%d", rowNumber), fmt.Sprintf("=Round(AR%d*D%d,2)", rowNumber, rowNumber), styleFormula)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// Save the spreadsheet with the origin path.
+	if err = f.Save(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// fillLwtExcelForBeIncProfit fill data to lwt excel file for BE(include profit rate calculation and all ecp fees calculation)
+func fillLwtExcelForBeIncProfit(lwtFilePath string, rows []model.ExcelColumnForLwt, sheetIdx int) error {
+	f, err := excelize.OpenFile(lwtFilePath)
+	if err != nil {
+		fmt.Println("fill lwt excel file for be include profit,open file failed", err)
+	}
+
+	defer func() {
+		// Close the spreadsheet.
+		if err := f.Close(); err != nil {
+		}
+	}()
+
+	f.SetActiveSheet(sheetIdx)
+
+	sheetName := f.GetSheetName(sheetIdx)
+
+	fmt.Printf("sheetName: %s\n", sheetName)
+
+	decimalPlaces := FloatDecimalPlaces
+	styleFormula, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, DecimalPlaces: &decimalPlaces})
+	style, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment})
+	stylePercent, err := f.NewStyle(&excelize.Style{Border: border, Alignment: alignment, NumFmt: 10, Font: font})
+
+	if err != nil {
+		log.Errorf("Create excel syle failed: %v", err)
+	} else {
+		for i := 0; i < len(rows); i++ {
+			rowNumber := InsertRowFirst + i
+
+			err = f.InsertRows(sheetName, rowNumber, 1)
+			row := rows[i]
+
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("A%d", rowNumber), row.ItemNumber, style)
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("B%d", rowNumber), row.ProductNo, style)
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("C%d", rowNumber), row.Description, style)
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("D%d", rowNumber), row.Quantity, style)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("E%d", rowNumber), row.NetWeight, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("F%d", rowNumber), row.Height, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("G%d", rowNumber), row.Width, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("H%d", rowNumber), row.Length, styleFormula)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("I%d", rowNumber), fmt.Sprintf("=Round((F%d*G%d*H%d)/1000000,6)", rowNumber, rowNumber, rowNumber), styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("J%d", rowNumber), fmt.Sprintf("=Round(I%d*35.315,6)", rowNumber), styleFormula)
+
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("K%d", rowNumber), row.Country, style)
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("L%d", rowNumber), row.HsCode, style)
+			err = addStringCellForSheet(f, sheetName, fmt.Sprintf("M%d", rowNumber), row.WebLink, style)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("N%d", rowNumber), 0.0, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("O%d", rowNumber), 0.0, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("P%d", rowNumber), row.Price, styleFormula)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("Q%d", rowNumber), fmt.Sprintf("=P%d", rowNumber), styleFormula)
+
+			// marketplace
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("R%d", rowNumber), row.EuVatRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("S%d", rowNumber), fmt.Sprintf("=Round(Q%d*(1-1/(1+R%d)), 6)", rowNumber, rowNumber), styleFormula)
+
+			// platform cost(ecp fees)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("T%d", rowNumber), row.ReferralFeeRate, styleFormula)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("U%d", rowNumber), fmt.Sprintf("=T%d", rowNumber), stylePercent)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("V%d", rowNumber), fmt.Sprintf("=Round(T%d*Q%d,6)", rowNumber, rowNumber), styleFormula)
+			// 原计算模版 多出的费用
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("W%d", rowNumber), row.ClosingFee, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("X%d", rowNumber), row.HighVolumeListingFee, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("Y%d", rowNumber), row.ProcessingFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("Z%d", rowNumber), fmt.Sprintf("=Round(Y%d*Q%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AA%d", rowNumber), row.AuthorisationFee, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AB%d", rowNumber), fmt.Sprintf("=AA%d", rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AC%d", rowNumber), row.InterchangeableFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AD%d", rowNumber), fmt.Sprintf("=Round(AC%d*Q%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AE%d", rowNumber), row.FulfilmentFee, styleFormula)
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AF%d", rowNumber), row.StorageFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AG%d", rowNumber), fmt.Sprintf("=Round(AF%d*I%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AH%d", rowNumber), row.AdvertisingFee, styleFormula)
+
+			// profit
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AI%d", rowNumber), row.ProfitRate, styleFormula)
+			profitFormula := fmt.Sprintf("=Round(AI%d*Q%d,6)",rowNumber, rowNumber)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AJ%d", rowNumber), profitFormula, styleFormula)
+
+			// local cost
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AK%d", rowNumber), row.GroundFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AL%d", rowNumber), fmt.Sprintf("=Round(AK%d*E%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AM%d", rowNumber), row.WarehouseFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AN%d", rowNumber), fmt.Sprintf("=Round(AM%d*E%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AO%d", rowNumber), row.ClearanceRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AP%d", rowNumber), fmt.Sprintf("=Round(AO%d*E%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AQ%d", rowNumber), row.DeliveryRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AR%d", rowNumber), fmt.Sprintf("=Round(AQ%d*E%d,6)", rowNumber, rowNumber), styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AS%d", rowNumber), row.WithinFeeRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AT%d", rowNumber), fmt.Sprintf("=Round(AS%d*E%d,6)", rowNumber, rowNumber), styleFormula)
+
+			// subtotal
+			subtotalFormula := fmt.Sprintf("=Round(AL%d+AN%d+AP%d+AR%d+AT%d,6)", rowNumber, rowNumber, rowNumber, rowNumber, rowNumber)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AU%d", rowNumber), subtotalFormula, styleFormula)
+
+			// customs value include duty
+			customsValueIncludeDutyFormula := fmt.Sprintf("=Round(Q%d-(S%d+V%d+W%d+X%d+Z%d+AB%d+AD%d+AE%d+AG%d+AH%d+AJ%d+AU%d),2)",
+				rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber, rowNumber)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AV%d", rowNumber), customsValueIncludeDutyFormula, styleFormula)
+
+			err = addFloatCellForSheet(f, sheetName, fmt.Sprintf("AX%d", rowNumber), row.EuDutyRate, styleFormula)
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AY%d", rowNumber), fmt.Sprintf("=AX%d", rowNumber), stylePercent)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AW%d", rowNumber), fmt.Sprintf("=Round(AV%d/(1+AX%d),2)", rowNumber, rowNumber), styleFormula)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("AZ%d", rowNumber), fmt.Sprintf("=Round(AW%d*AX%d,2)", rowNumber, rowNumber), styleFormula)
+
+			err = addFormulaCellForSheet(f, sheetName, fmt.Sprintf("BA%d", rowNumber), fmt.Sprintf("=Round(AW%d*D%d,2)", rowNumber, rowNumber), styleFormula)
 			if err != nil {
 				return err
 			}

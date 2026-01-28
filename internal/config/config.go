@@ -59,6 +59,7 @@ type LWTAdjustment struct {
 
 // LWTTemplate represents the LWT template configuration
 type LWTTemplate struct {
+	Profit   LWTTemplateCountries `mapstructure:"profit"`
 	Official LWTTemplateCountries `mapstructure:"official"`
 	Brief    LWTTemplateBrief     `mapstructure:"brief"`
 }

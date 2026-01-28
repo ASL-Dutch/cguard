@@ -7,12 +7,16 @@ type ResponseForLwt struct {
 	LwtFilename string `json:"lwt_filename"`
 	Error       string `json:"errors"`
 	Brief       bool   `json:"brief"`
+	// IncProfit 本次生成是否使用利润率版模板/计算逻辑
+	IncProfit bool `json:"inc_profit"`
 }
 
 // RequestForLwt Request for Lwt
 type RequestForLwt struct {
 	CustomsId string `json:"customs_id"`
 	Brief     bool   `json:"brief"`
+	// IncProfit 可选字段：true 表示生成包含利润率的 LWT；不传则默认按 false 处理
+	IncProfit *bool `json:"inc_profit,omitempty"`
 }
 
 // LwtArticleAdjustment 品类微调参数
